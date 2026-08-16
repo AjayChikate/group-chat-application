@@ -1,2 +1,5 @@
-flask
-flask-sock
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+cryptography

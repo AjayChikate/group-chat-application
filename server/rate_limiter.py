@@ -1,20 +1,5 @@
-"""
-rate_limiter.py
-------------------------------------------------------------
-Per-connection token-bucket rate limiter.
 
-Why: the baseline tutorial has no defense against a client
-(buggy or malicious) hammering send() in a loop and flooding
-every other participant. A token bucket allows short bursts
-(normal typing/sending behavior) while capping sustained rate.
-
-capacity        -> max tokens (= max burst size)
-refill_per_sec  -> tokens regenerated per second
-------------------------------------------------------------
-"""
 import time
-
-
 class TokenBucket:
     def __init__(self, capacity: float, refill_per_sec: float):
         self.capacity = capacity
@@ -30,9 +15,9 @@ class TokenBucket:
             self.last_refill = now
 
     def try_consume(self, cost: float = 1) -> bool:
-        """Attempt to spend `cost` tokens. Returns True if allowed."""
-        self._refill()
-        if self.tokens >= cost:
+        
+        self._refill() # checking how many tokens are left
+        if self.tokens >= cost: # token usage decerase what is left
             self.tokens -= cost
             return True
         return False

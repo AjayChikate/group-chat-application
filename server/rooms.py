@@ -1,33 +1,20 @@
-"""
-rooms.py
-------------------------------------------------------------
-Tracks chat rooms and who is currently in each one.
 
-The baseline tutorial had exactly one implicit "room" (the
-whole server). Real chat apps isolate broadcast scope by
-room/channel, so a message sent in #tech never reaches
-someone sitting in #random. RoomManager is the component
-responsible for that isolation: it owns the room -> members
-mapping and is the only thing allowed to broadcast into a room.
-------------------------------------------------------------
-"""
+import asyncio
 import json
 import time
 
 
 def _safe_send(member: dict, payload: str) -> None:
-    """Send raw JSON payload to one member, thread-safe, silent on failure
-    (a dead socket is cleaned up by its own connection thread, not here)."""
-    ws = member.get('ws')
-    if not ws or not getattr(ws, 'connected', False):
+    if not member.get('connected', False):
         return
-    lock = member.get('lock')
+    ws = member.get('ws')
+    loop = member.get('loop')
+    if not ws or not loop:
+        return
     try:
-        if lock:
-            with lock:
-                ws.send(payload)
-        else:
-            ws.send(payload)
+        # run_coroutine_threadsafe is safe to call from any thread,
+        # including the asyncio thread itself.
+        asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
     except Exception:
         pass
 
@@ -35,7 +22,6 @@ def _safe_send(member: dict, payload: str) -> None:
 class RoomManager:
     def __init__(self, logger):
         self.logger = logger
-        # room_name -> {'name': str, 'members': {client_id: member_dict}, 'created_at': float}
         self.rooms = {}
 
     def ensure_room(self, name: str) -> dict:
@@ -71,7 +57,6 @@ class RoomManager:
         return [m['username'] for m in self.get_members(room_name)]
 
     def broadcast(self, room_name: str, obj: dict, exclude_client_id: str = None) -> None:
-        """Send `obj` to every socket in `room_name`, optionally skipping one client."""
         room = self.rooms.get(room_name)
         if not room:
             return
