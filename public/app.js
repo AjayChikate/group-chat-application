@@ -61,7 +61,7 @@
   let intentionalClose = false;
   let typingTimeout = null;
 
-  wsUrlInput.value = `ws://${location.hostname || "localhost"}:8080`;
+  wsUrlInput.value = `ws://${location.hostname || "localhost"}:8080/ws`;
 
   // ---------------------------------------------------------
   // Helpers
