@@ -505,7 +505,9 @@ form#composer {
   padding: 6px 8px;
   border-radius: 4px;
   cursor: pointer;
-  transition: border-color 0.15s ease, opacity 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    opacity 0.15s ease;
 }
 .tool-btn:hover {
   border-color: var(--signal);
