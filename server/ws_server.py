@@ -59,7 +59,7 @@ import uuid
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from server import config, store
+from server import config, store, crypto
 from server.rate_limiter import TokenBucket
 
 ROOM_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,24}$')
@@ -257,6 +257,12 @@ class WSServer:
         client['room'] = room
         client['is_admin'] = username.lower() in config.ADMIN_USERNAMES
 
+        # Initialize sender's asymmetric Ed25519 signing keypair
+        priv_key, pub_key = crypto.get_or_create_sender_keys(username)
+        client['private_key'] = priv_key
+        client['public_key'] = pub_key
+        store.save_user_public_key(username, pub_key.public_bytes_raw())
+
         self.username_to_id[username.lower()] = client['id']
         self.room_manager.join(room, client['id'], {
             'ws': client['ws'],
@@ -312,7 +318,9 @@ class WSServer:
             'room': client['room'],
             'timestamp': int(time.time() * 1000),
         }
-        store.append_message(client['room'], msg)
+        
+        # Pipeline: Message -> Authenticate -> Encrypt (AES-GCM) -> Sign (Ed25519) -> Store (SQLite) -> Broadcast
+        store.append_message(client['room'], msg, client.get('private_key'))
         self.room_manager.broadcast(client['room'], {'type': 'message', **msg})
         self._send(client, {'type': 'delivered', 'id': msg['id']})
 
@@ -344,11 +352,9 @@ class WSServer:
             'timestamp': int(time.time() * 1000),
         }
 
-        # Persisted to a per-pair audit log (not replayed live — kept
-        # deliberately simple — but demonstrates the same durable-write
-        # path used for room messages, and gives a paper trail).
+        # Persisted encrypted & signed in SQLite
         pair_key = '__'.join(sorted([client['username'].lower(), target_name.lower()]))
-        store.append_message(f'dm-{pair_key}', dm)
+        store.append_message(f'dm-{pair_key}', dm, client.get('private_key'))
 
         target_client = self.clients_by_id.get(target_id)
         if target_client:

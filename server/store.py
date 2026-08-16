@@ -1,68 +1,209 @@
-"""
-store.py
-------------------------------------------------------------
-Persistence layer for chat history.
-
-Design choice: an append-only JSON-Lines file per room
-(`data/rooms/<room>.log`), one message per line. This gives us:
-  - Durability across server restarts (the baseline tutorial
-    lost all history the moment the process died).
-  - A write path that's just an append to a file — no schema
-    migrations, no native DB driver, works on any lab machine
-    with plain Python.
-  - A trivial "replay last N messages" read path for history-
-    on-join.
-
-This module is intentionally the ONLY place that knows about
-the on-disk format. Everything else in the app calls
-append_message()/get_history() and doesn't care how or where
-messages are stored — so swapping this for SQLite/Postgres
-later only means rewriting this one file.
-------------------------------------------------------------
-"""
-import json
 import os
-import re
+import sqlite3
+import threading
+from typing import List, Dict, Any, Optional
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+from server import crypto
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, 'data', 'rooms')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DB_PATH = os.path.join(DATA_DIR, 'chat.db')
+
+_db_lock = threading.Lock()
 
 
-def sanitize_name(name: str) -> str:
-    """Keep filenames predictable and traversal-safe regardless of
-    what a client sends as a room name."""
-    cleaned = re.sub(r'[^a-zA-Z0-9_-]', '_', str(name))[:64]
-    return cleaned or 'room'
+def get_db_connection() -> sqlite3.Connection:
+    crypto.ensure_crypto_dirs() # conneting ti a db
+    conn = sqlite3.connect(DB_PATH, timeout=10.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def ensure_dir() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def room_file(room: str) -> str:
-    return os.path.join(DATA_DIR, f'{sanitize_name(room)}.log')
-
-
-def append_message(room: str, message: dict) -> None:
-    """Append one message object to a room's durable log."""
-    ensure_dir()
-    with open(room_file(room), 'a', encoding='utf-8') as f:
-        f.write(json.dumps(message) + '\n')
-
-
-def get_history(room: str, limit: int) -> list:
-    """Return up to `limit` most recent messages for a room, oldest first."""
-    ensure_dir()
-    file = room_file(room)
-    if not os.path.exists(file):
-        return []
-    with open(file, 'r', encoding='utf-8') as f:
-        lines = [line for line in f.read().strip().split('\n') if line]
-    tail = lines[-limit:] if limit else lines
-    result = []
-    for line in tail:
+def init_db() -> None:
+    with _db_lock:
+        conn = get_db_connection()
         try:
-            result.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return result
+            with conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        room_id TEXT NOT NULL,
+                        sender TEXT NOT NULL,
+                        ciphertext BLOB NOT NULL,
+                        nonce BLOB NOT NULL,
+                        signature BLOB NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_messages_room_ts 
+                    ON messages(room_id, timestamp)
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS user_keys (
+                        username TEXT PRIMARY KEY,
+                        public_key BLOB NOT NULL,
+                        created_at REAL DEFAULT (strftime('%s', 'now'))
+                    )
+                """)
+        finally:
+            conn.close()
+
+
+# Initialize database on module import
+init_db()
+
+
+def save_user_public_key(username: str, public_key_bytes: bytes) -> None:
+    with _db_lock:
+        conn = get_db_connection()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT INTO user_keys (username, public_key)
+                    VALUES (?, ?)
+                    ON CONFLICT(username) DO UPDATE SET public_key=excluded.public_key
+                """, (username.lower(), public_key_bytes))
+        finally:
+            conn.close()
+
+
+def get_user_public_key(username: str) -> Optional[ed25519.Ed25519PublicKey]:
+    with _db_lock:
+        conn = get_db_connection()
+        try:
+            row = conn.execute(
+                "SELECT public_key FROM user_keys WHERE username = ?",
+                (username.lower(),)
+            ).fetchone()
+            if row:
+                return ed25519.Ed25519PublicKey.from_public_bytes(row['public_key'])
+        finally:
+            conn.close()
+    
+    # Fallback to keystore on disk if available
+    _, pub = crypto.get_or_create_sender_keys(username)
+    return pub
+
+
+def save_message(
+    msg_id: str,
+    room_id: str,
+    sender: str,
+    ciphertext: bytes,
+    nonce: bytes,
+    signature: bytes,
+    timestamp: int
+) -> None:
+    with _db_lock:
+        conn = get_db_connection()
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO messages (id, room_id, sender, ciphertext, nonce, signature, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (msg_id, room_id, sender, ciphertext, nonce, signature, timestamp))
+        finally:
+            conn.close()
+
+
+def append_message(room_id: str, msg: Dict[str, Any], sender_private_key: Optional[ed25519.Ed25519PrivateKey] = None) -> Dict[str, Any]:
+    msg_id = msg['id']
+    sender = msg.get('username') or msg.get('from')
+    text = msg['text']
+    timestamp = msg['timestamp']
+
+    # Ensure sender keys exist
+    if sender_private_key is None:
+        sender_private_key, sender_pub = crypto.get_or_create_sender_keys(sender)
+    else:
+        sender_pub = sender_private_key.public_key()
+
+    save_user_public_key(sender, sender_pub.public_bytes_raw())
+
+    # 1. Encrypt (AES-GCM 256)
+    ciphertext, nonce = crypto.encrypt_message(text)
+
+    # 2. Sign (Ed25519)
+    signable_payload = crypto.make_signable_payload(msg_id, room_id, sender, timestamp, nonce, ciphertext)
+    signature = crypto.sign_message(sender_private_key, signable_payload)
+
+    # 3. Store in SQLite
+    save_message(msg_id, room_id, sender, ciphertext, nonce, signature, timestamp)
+
+    return {
+        'id': msg_id,
+        'room': room_id,
+        'username': sender,
+        'text': text,
+        'timestamp': timestamp,
+        'verified': True,
+    }
+
+
+def get_history(room_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+
+    with _db_lock:
+        conn = get_db_connection()
+        try:
+            cursor = conn.execute("""
+                SELECT id, room_id, sender, ciphertext, nonce, signature, timestamp
+                FROM messages
+                WHERE room_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (room_id, limit))
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+    # Oldest first for chat display
+    rows = list(reversed(rows))
+    history = []
+
+    for row in rows:
+        msg_id = row['id']
+        sender = row['sender']
+        timestamp = row['timestamp']
+        ciphertext = row['ciphertext']
+        nonce = row['nonce']
+        signature = row['signature']
+
+        # 1. Verify Digital Signature (Ed25519)
+        pub_key = get_user_public_key(sender)
+        signable_payload = crypto.make_signable_payload(msg_id, room_id, sender, timestamp, nonce, ciphertext)
+        
+        signature_valid = False
+        if pub_key:
+            signature_valid = crypto.verify_signature(pub_key, signature, signable_payload)
+
+        # 2. Decrypt Ciphertext (AES-GCM)
+        decrypted_text = None
+        decryption_valid = False
+        try:
+            decrypted_text = crypto.decrypt_message(ciphertext, nonce)
+            decryption_valid = True
+        except InvalidTag:
+            decrypted_text = "[TAMPERED: AES-GCM Integrity Check Failed - Ciphertext Modified]"
+        except Exception as e:
+            decrypted_text = f"[DECRYPTION ERROR: {str(e)}]"
+
+        if not signature_valid and decryption_valid:
+            decrypted_text = f"[UNVERIFIED SIGNATURE] {decrypted_text}"
+
+        is_tampered = not (signature_valid and decryption_valid)
+
+        history.append({
+            'id': msg_id,
+            'username': sender,
+            'text': decrypted_text,
+            'room': room_id,
+            'timestamp': timestamp,
+            'verified': not is_tampered,
+            'tampered': is_tampered,
+        })
+
+    return history

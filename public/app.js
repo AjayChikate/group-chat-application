@@ -61,7 +61,8 @@
   let intentionalClose = false;
   let typingTimeout = null;
 
-  wsUrlInput.value = `ws://${location.hostname || "localhost"}:8080/ws`;
+  const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  wsUrlInput.value = `${wsProto}//${location.host || "localhost:5000"}/ws`;
 
   // ---------------------------------------------------------
   // Helpers

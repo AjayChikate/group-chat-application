@@ -132,7 +132,9 @@ body {
 #app.active {
   display: grid;
   grid-template-columns: 220px 1fr;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 88vh;
+  max-height: 88vh;
 }
 
 /* Top bar spans both columns */
@@ -326,8 +328,12 @@ header .admin-badge {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 #threadHeader {
+  flex-shrink: 0;
   padding: 8px 18px;
   border-bottom: 1px solid var(--line);
   font-size: 11px;
@@ -353,7 +359,8 @@ header .admin-badge {
 }
 
 #log {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 18px;
   display: flex;
@@ -425,6 +432,7 @@ header .admin-badge {
 }
 
 #typing {
+  flex-shrink: 0;
   font-size: 11px;
   color: var(--dim);
   padding: 0 18px;
@@ -433,6 +441,7 @@ header .admin-badge {
 }
 
 form#composer {
+  flex-shrink: 0;
   display: flex;
   gap: 8px;
   padding: 12px 18px;
