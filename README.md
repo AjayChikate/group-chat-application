@@ -158,8 +158,8 @@ It's designed to be easy to read end-to-end: the wire protocol, the crypto pipel
 ### Installation
 
 ```bash
-git clone <this-repo-url>
-cd <this-repo>
+git clone https://github.com/ashutosh229/group-chat-application.git
+cd group-chat-application
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
