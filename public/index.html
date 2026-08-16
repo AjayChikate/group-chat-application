@@ -60,6 +60,17 @@
           <span class="status" id="statusText">disconnected</span>
         </div>
         <div class="me" id="me"></div>
+        <div class="toolbar">
+          <button type="button" id="soundToggleBtn" class="tool-btn" title="Toggle notification sound">
+            🔔
+          </button>
+          <button type="button" id="themeToggleBtn" class="tool-btn" title="Toggle light/dark theme">
+            🌙
+          </button>
+          <button type="button" id="clearChatBtn" class="tool-btn" title="Clear chat view (local only)">
+            🧹
+          </button>
+        </div>
       </header>
 
       <aside id="sidebar">
@@ -110,6 +121,7 @@
           />
           <button type="submit" id="sendBtn">Send</button>
         </form>
+        <div id="charCounter" class="char-counter">0 / 1000</div>
       </main>
     </div>
 
