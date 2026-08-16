@@ -489,3 +489,61 @@ form#composer {
   border-radius: 8px;
   margin-left: 4px;
 }
+
+/* ---------- Header toolbar (sound / theme / clear-chat) ---------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tool-btn {
+  background: var(--panel-alt);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+.tool-btn:hover {
+  border-color: var(--signal);
+}
+.tool-btn.off {
+  opacity: 0.4;
+}
+
+/* ---------- Composer character counter ---------- */
+.char-counter {
+  font-size: 10px;
+  color: var(--dim);
+  text-align: right;
+  padding: 2px 4px 0;
+  letter-spacing: 0.04em;
+}
+.char-counter.near-limit {
+  color: var(--warn);
+}
+.char-counter.at-limit {
+  color: var(--danger);
+}
+
+/* ---------- Light theme override ----------
+   Toggled via body.light-theme; overrides the same custom
+   properties defined in :root above, so every existing rule
+   that already reads var(--bg)/var(--panel)/etc. repaints
+   automatically with no other changes required. */
+body.light-theme {
+  --bg: #f4f6f5;
+  --panel: #ffffff;
+  --panel-alt: #eef1f0;
+  --line: #d7ded9;
+  --text: #17211f;
+  --dim: #5b6b68;
+  --signal: #0f9d76;
+  --warn: #a9750c;
+  --self: #1668a8;
+  --danger: #c23f3f;
+  --away: #a9860c;
+}
