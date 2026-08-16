@@ -341,4 +341,4 @@ Contributions are welcome:
 
 ## License
 
-No license file is currently included in this repository. Add a `LICENSE` file (e.g., MIT, Apache 2.0) to clarify usage terms before distributing or accepting external contributions.
+This project is licensed under the [MIT License](LICENSE).
