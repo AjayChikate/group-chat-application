@@ -321,7 +321,7 @@ uvicorn's own access logs are suppressed (`log_level='warning'`) so this structu
 | Reconnect loop never stops             | Client-side backoff caps at 16s and keeps retrying by design until the server is reachable again                                                   |
 | Admin controls not showing             | Username doesn't (case-insensitively) match `ADMIN_USERNAMES`                                                                                      |
 
-## Roadmap
+## Future Roadmap and Plans
 
 - [ ] Password/token-based authentication
 - [ ] Per-room or per-conversation encryption keys
