@@ -9,25 +9,37 @@ room/channel, so a message sent in #tech never reaches
 someone sitting in #random. RoomManager is the component
 responsible for that isolation: it owns the room -> members
 mapping and is the only thing allowed to broadcast into a room.
+
+FastAPI migration note:
+  Sending to a Starlette WebSocket must happen on the asyncio
+  event loop (ws.send_text is a coroutine). _safe_send now
+  schedules the coroutine via asyncio.run_coroutine_threadsafe
+  so this module stays synchronous and thread-safe even when
+  called from background threads (e.g. the presence sweep).
+  Connection liveness is tracked via the 'connected' boolean
+  flag on the member dict rather than getattr(ws, 'connected')
+  which is not available on Starlette's WebSocket.
 ------------------------------------------------------------
 """
+import asyncio
 import json
 import time
 
 
 def _safe_send(member: dict, payload: str) -> None:
     """Send raw JSON payload to one member, thread-safe, silent on failure
-    (a dead socket is cleaned up by its own connection thread, not here)."""
-    ws = member.get('ws')
-    if not ws or not getattr(ws, 'connected', False):
+    (a dead socket is cleaned up by its own connection coroutine, not here).
+    Works whether called from the asyncio thread or a background thread."""
+    if not member.get('connected', False):
         return
-    lock = member.get('lock')
+    ws = member.get('ws')
+    loop = member.get('loop')
+    if not ws or not loop:
+        return
     try:
-        if lock:
-            with lock:
-                ws.send(payload)
-        else:
-            ws.send(payload)
+        # run_coroutine_threadsafe is safe to call from any thread,
+        # including the asyncio thread itself.
+        asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
     except Exception:
         pass
 

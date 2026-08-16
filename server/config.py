@@ -31,9 +31,9 @@ DEFAULT_ROOMS = csv('DEFAULT_ROOMS', ['general', 'random', 'tech'])
 ADMIN_USERNAMES = [s.lower() for s in csv('ADMIN_USERNAMES', ['admin'])]
 
 # How many past messages are replayed to a client when it joins/switches a room.
-HISTORY_LIMIT = int(os.environ.get('HISTORY_LIMIT', '50'))
+HISTORY_LIMIT = int(os.environ.get('HISTORY_LIMIT', '20'))
 
-# Dead-connection detection: ping every N ms, drop clients that never pong.
+# Dead-connection detection: ping every N ms, drop clients that never poing back.
 HEARTBEAT_INTERVAL_MS = int(os.environ.get('HEARTBEAT_INTERVAL_MS', '30000'))
 
 # Presence: mark a user "away" after this much inactivity.

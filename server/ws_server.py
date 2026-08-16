@@ -36,21 +36,28 @@ Wire protocol (server -> client):
   { type:'kicked',          by }
   { type:'system_shutdown', text }
 
-Conversion note (dead-connection detection):
-Node's `ws` library sends manual ping frames on a setInterval and
-terminates clients that never pong. Python's `simple-websocket`
-(what flask-sock uses under the hood) does the same thing natively
-when constructed with a `ping_interval` — so instead of a manual
-heartbeat loop here, app.py sets
-`app.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': ...}`
-and dead sockets raise/close automatically, same end result.
+FastAPI migration notes:
+  - handle_connection is now async; it calls await ws.accept() once,
+    then loops on await ws.receive_text() which raises
+    WebSocketDisconnect when the client closes.
+  - _send / _close_ws schedule coroutines onto the running asyncio
+    event loop (stored as self._loop at startup) so they are safe
+    to call from background threads (presence sweep, etc.).
+  - Connection liveness is tracked via client['connected'] bool
+    because Starlette's WebSocket has no .connected attribute.
+  - Dead-connection detection: uvicorn/starlette handle WebSocket
+    ping/pong natively when configured; the heartbeat_interval is
+    passed via the lifespan / uvicorn config in app.py.
 ------------------------------------------------------------
 """
+import asyncio
 import json
 import re
 import time
 import threading
 import uuid
+
+from fastapi import WebSocket, WebSocketDisconnect
 
 from server import config, store
 from server.rate_limiter import TokenBucket
@@ -64,6 +71,7 @@ class WSServer:
         self.logger = logger
         self.clients_by_id = {}    # client_id -> client dict
         self.username_to_id = {}   # lowercase username -> client_id
+        self._loop: asyncio.AbstractEventLoop | None = None  # set on first connection
 
         for room in config.DEFAULT_ROOMS:
             self.room_manager.ensure_room(room)
@@ -73,6 +81,15 @@ class WSServer:
         self._presence_thread.start()
 
     # ---------------------------------------------------------
+    # Asyncio loop access — captured once from the first request
+    # so background threads can schedule coroutines on it.
+    # ---------------------------------------------------------
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+        return self._loop
+
+    # ---------------------------------------------------------
     # Helpers
     # ---------------------------------------------------------
     @staticmethod
@@ -80,14 +97,31 @@ class WSServer:
         return isinstance(name, str) and bool(ROOM_NAME_RE.match(name))
 
     def _send(self, client: dict, obj: dict) -> None:
-        """Thread-safe send of one JSON object to one client."""
-        ws = client['ws']
-        if not getattr(ws, 'connected', False):
+        """Thread-safe send of one JSON object to one client.
+
+        May be called from either the asyncio thread or a background
+        thread. Schedules ws.send_text() on the event loop so it is
+        always executed in the correct async context.
+        """
+        if not client.get('connected', False):
             return
+        ws: WebSocket = client['ws']
+        loop = self._ensure_loop()
         payload = json.dumps(obj)
         try:
-            with client['lock']:
-                ws.send(payload)
+            asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
+        except Exception:
+            pass
+
+    def _close_ws(self, client: dict, code: int = 1001) -> None:
+        """Schedule an async ws.close() from any thread."""
+        if not client.get('connected', False):
+            return
+        ws: WebSocket = client['ws']
+        loop = self._ensure_loop()
+        client['connected'] = False
+        try:
+            asyncio.run_coroutine_threadsafe(ws.close(code=code), loop)
         except Exception:
             pass
 
@@ -114,13 +148,21 @@ class WSServer:
         return final
 
     # ---------------------------------------------------------
-    # Per-connection entry point — called from app.py's @sock.route
+    # Per-connection entry point — called from app.py's @app.websocket
     # ---------------------------------------------------------
-    def handle_connection(self, ws) -> None:
+    async def handle_connection(self, ws: WebSocket) -> None:
+        await ws.accept()
+
+        # Capture the event loop on the first connection (we're on the
+        # asyncio thread here, so get_event_loop() is correct).
+        self._ensure_loop()
+
         client_id = str(uuid.uuid4())
         client = {
             'id': client_id,
             'ws': ws,
+            'connected': True,
+            'loop': self._loop,
             'username': None,
             'room': None,
             'is_admin': False,
@@ -134,9 +176,16 @@ class WSServer:
 
         try:
             while True:
-                raw = ws.receive()
+                try:
+                    raw = await ws.receive_text()
+                except WebSocketDisconnect:
+                    break
+                except Exception as exc:
+                    self.logger.log('socket_error', client_id=client_id, message=str(exc))
+                    break
+
                 if raw is None:
-                    break  # client closed the connection
+                    break
 
                 try:
                     data = json.loads(raw)
@@ -149,9 +198,8 @@ class WSServer:
                     self._broadcast_presence(client, 'online')
 
                 self._dispatch(client, data)
-        except Exception as exc:
-            self.logger.log('socket_error', client_id=client_id, message=str(exc))
         finally:
+            client['connected'] = False
             self._handle_close(client)
 
     def _dispatch(self, client: dict, data: dict) -> None:
@@ -210,7 +258,13 @@ class WSServer:
         client['is_admin'] = username.lower() in config.ADMIN_USERNAMES
 
         self.username_to_id[username.lower()] = client['id']
-        self.room_manager.join(room, client['id'], {'ws': client['ws'], 'username': username, 'lock': client['lock']})
+        self.room_manager.join(room, client['id'], {
+            'ws': client['ws'],
+            'connected': True,
+            'loop': client['loop'],
+            'username': username,
+            'lock': client['lock'],
+        })
 
         history = store.get_history(room, config.HISTORY_LIMIT)
 
@@ -309,7 +363,7 @@ class WSServer:
             return
         new_room = data.get('room')
         if not self._is_valid_room_name(new_room) or not self.room_manager.room_exists(new_room):
-            return self._send_error(client, 'no_such_room', f"Room \"{new_room}\" doesn't exist.")
+            return self._send_error(client, 'no_such_room', f'Room "{new_room}" doesn\'t exist.')
         if new_room == client['room']:
             return
 
@@ -323,7 +377,13 @@ class WSServer:
         })
 
         client['room'] = new_room
-        self.room_manager.join(new_room, client['id'], {'ws': client['ws'], 'username': client['username'], 'lock': client['lock']})
+        self.room_manager.join(new_room, client['id'], {
+            'ws': client['ws'],
+            'connected': client.get('connected', True),
+            'loop': client['loop'],
+            'username': client['username'],
+            'lock': client['lock'],
+        })
 
         history = store.get_history(new_room, config.HISTORY_LIMIT)
         self._send(client, {
@@ -386,10 +446,7 @@ class WSServer:
 
         if action == 'kick':
             self._send(target, {'type': 'kicked', 'by': client['username']})
-            try:
-                target['ws'].close(reason=4001, message='Kicked by moderator')
-            except Exception:
-                pass
+            self._close_ws(target, code=4001)
             self.logger.log('moderation_kick', by=client['username'], target=target_name)
         elif action == 'mute':
             target['muted'] = True
@@ -433,7 +490,4 @@ class WSServer:
         self._presence_stop.set()
         self._broadcast_to_all({'type': 'system_shutdown', 'text': 'Server is shutting down. You will be disconnected.'})
         for client in list(self.clients_by_id.values()):
-            try:
-                client['ws'].close(reason=1001, message='Server shutting down')
-            except Exception:
-                pass
+            self._close_ws(client, code=1001)
