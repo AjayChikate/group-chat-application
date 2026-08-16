@@ -55,54 +55,26 @@ It's designed to be easy to read end-to-end: the wire protocol, the crypto pipel
 
 ## Features
 
-| Category | Details |
-|---|---|
-| **Rooms** | Multi-room chat with join/switch/create; default rooms persist even when empty |
-| **Direct messages** | 1-to-1 private messaging alongside room chat, with unread notifications |
-| **Presence** | Live online/away/offline status; auto-away after a configurable idle timeout |
-| **Moderation** | Admin usernames (configurable) get `kick` and `mute`/`unmute` powers |
-| **UX niceties** | Typing indicators, delivery receipts, character counter, sound + theme toggles |
-| **Resilience** | Client auto-reconnects with exponential backoff (1s → 16s cap) on dropped sockets |
-| **History** | Recent messages replayed on join / room switch, decrypted and verified on the fly |
-| **Security** | AES-256-GCM encryption + Ed25519 signatures on every message, verified on read |
-| **Abuse prevention** | Per-connection sliding-window rate limiter (token bucket) |
-| **Observability** | Structured JSON logs for joins, disconnects, moderation actions, and server lifecycle |
+| Category             | Details                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| **Rooms**            | Multi-room chat with join/switch/create; default rooms persist even when empty        |
+| **Direct messages**  | 1-to-1 private messaging alongside room chat, with unread notifications               |
+| **Presence**         | Live online/away/offline status; auto-away after a configurable idle timeout          |
+| **Moderation**       | Admin usernames (configurable) get `kick` and `mute`/`unmute` powers                  |
+| **UX niceties**      | Typing indicators, delivery receipts, character counter, sound + theme toggles        |
+| **Resilience**       | Client auto-reconnects with exponential backoff (1s → 16s cap) on dropped sockets     |
+| **History**          | Recent messages replayed on join / room switch, decrypted and verified on the fly     |
+| **Security**         | AES-256-GCM encryption + Ed25519 signatures on every message, verified on read        |
+| **Abuse prevention** | Per-connection sliding-window rate limiter (token bucket)                             |
+| **Observability**    | Structured JSON logs for joins, disconnects, moderation actions, and server lifecycle |
 
 ## Architecture
 
-```
-                        ┌─────────────────────────┐
-                        │        Browser           │
-                        │  public/index.html        │
-                        │  public/app.js (WS client) │
-                        └────────────┬───────────────┘
-                                     │ WebSocket (/ws) + static HTTP
-                                     ▼
-                        ┌─────────────────────────┐
-                        │        app.py             │
-                        │  FastAPI routes + lifespan │
-                        └────────────┬───────────────┘
-                                     ▼
-                        ┌─────────────────────────┐
-                        │   server/ws_server.py      │
-                        │  Wire protocol dispatch,    │
-                        │  rate limiting, moderation,  │
-                        │  presence sweep (bg thread)   │
-                        └───────┬─────────────┬─────────┘
-                                │             │
-                     ┌──────────▼───┐   ┌─────▼───────────┐
-                     │ server/rooms.py │   │ server/store.py    │
-                     │ In-memory room  │   │ Encrypt → Sign →    │
-                     │ membership +    │   │ Persist → Verify →   │
-                     │ broadcast       │   │ Decrypt (SQLite)      │
-                     └─────────────────┘   └─────────┬────────────┘
-                                                       ▼
-                                          ┌─────────────────────────┐
-                                          │      server/crypto.py     │
-                                          │  AES-256-GCM (aead)         │
-                                          │  Ed25519 (sign/verify)       │
-                                          └─────────────────────────┘
-```
+<p align="center">
+  <img src="./assets/architecture.svg" alt="Group Chat system architecture diagram" width="100%">
+</p>
+
+The request/data path flows top to bottom: the browser talks to `app.py` over HTTP (static assets) and a single `/ws` WebSocket connection; `ws_server.py` is the protocol hub that dispatches every event; `rooms.py` handles ephemeral in-memory membership and broadcast, while `store.py` drives the durable encrypt → sign → persist pipeline (and its mirror, verify → decrypt, on history reads) backed by `crypto.py` and SQLite.
 
 - **`ws_server.py`** is the only module that understands the JSON wire protocol; everything else stays generic.
 - **`rooms.py`** holds membership and broadcast logic purely in memory — no persistence.
@@ -111,15 +83,15 @@ It's designed to be easy to read end-to-end: the wire protocol, the crypto pipel
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Language | Python 3.10+ |
-| Web framework | [FastAPI](https://fastapi.tiangolo.com/) |
-| ASGI server | [uvicorn](https://www.uvicorn.org/) (`standard` extras: `websockets`, `httptools`, `uvloop`) |
-| Realtime transport | Native WebSockets (via Starlette/FastAPI) |
-| Cryptography | [`cryptography`](https://cryptography.io/) — AES-256-GCM, Ed25519 |
-| Persistence | SQLite (stdlib `sqlite3`) |
-| Frontend | Vanilla HTML/CSS/JavaScript — no build tooling required |
+| Layer              | Technology                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| Language           | Python 3.10+                                                                                 |
+| Web framework      | [FastAPI](https://fastapi.tiangolo.com/)                                                     |
+| ASGI server        | [uvicorn](https://www.uvicorn.org/) (`standard` extras: `websockets`, `httptools`, `uvloop`) |
+| Realtime transport | Native WebSockets (via Starlette/FastAPI)                                                    |
+| Cryptography       | [`cryptography`](https://cryptography.io/) — AES-256-GCM, Ed25519                            |
+| Persistence        | SQLite (stdlib `sqlite3`)                                                                    |
+| Frontend           | Vanilla HTML/CSS/JavaScript — no build tooling required                                      |
 
 ## Project Structure
 
@@ -207,16 +179,16 @@ docker run -p 5000:5000 -v $(pwd)/data:/app/data group-chat
 
 All configuration is environment-variable driven (see `server/config.py`) — no config file is required.
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `5000` | HTTP/WebSocket listen port |
-| `DEFAULT_ROOMS` | `general,random,tech` | Comma-separated rooms that always exist, even empty |
-| `ADMIN_USERNAMES` | `admin` | Comma-separated, case-insensitive usernames granted moderator powers |
-| `HISTORY_LIMIT` | `20` | Number of past messages replayed when a client joins/switches rooms |
-| `HEARTBEAT_INTERVAL_MS` | `30000` | WebSocket ping interval/timeout (ms) |
-| `IDLE_TIMEOUT_MS` | `100000` | Idle time (ms) before a user is marked "away" |
-| `RATE_LIMIT_BURST` | `8` | Token bucket capacity per connection |
-| `RATE_LIMIT_REFILL` | `2` | Tokens refilled per second per connection |
+| Variable                | Default               | Description                                                          |
+| ----------------------- | --------------------- | -------------------------------------------------------------------- |
+| `PORT`                  | `5000`                | HTTP/WebSocket listen port                                           |
+| `DEFAULT_ROOMS`         | `general,random,tech` | Comma-separated rooms that always exist, even empty                  |
+| `ADMIN_USERNAMES`       | `admin`               | Comma-separated, case-insensitive usernames granted moderator powers |
+| `HISTORY_LIMIT`         | `20`                  | Number of past messages replayed when a client joins/switches rooms  |
+| `HEARTBEAT_INTERVAL_MS` | `30000`               | WebSocket ping interval/timeout (ms)                                 |
+| `IDLE_TIMEOUT_MS`       | `100000`              | Idle time (ms) before a user is marked "away"                        |
+| `RATE_LIMIT_BURST`      | `8`                   | Token bucket capacity per connection                                 |
+| `RATE_LIMIT_REFILL`     | `2`                   | Tokens refilled per second per connection                            |
 
 Fixed limits (in `server/config.py`, not environment-configurable): `MAX_USERNAME_LEN=20`, `MAX_MESSAGE_LEN=1000`, `MAX_ROOM_NAME_LEN=24`.
 
@@ -268,41 +240,41 @@ All application traffic (after the initial page load) flows over a single `/ws` 
 
 ### Client → Server Events
 
-| Type | Payload | Notes |
-|---|---|---|
-| `join` | `{ username, room }` | First message on every connection; server assigns a de-duplicated username if taken |
-| `message` | `{ text }` | Sent to the client's current room |
-| `private_message` | `{ to, text }` | Direct message to another online user |
-| `switch_room` | `{ room }` | Must be an existing room |
-| `create_room` | `{ room }` | `1–24` chars, `[a-zA-Z0-9_-]` only; also switches the client into it |
-| `typing` | `{}` | Broadcast to the client's current room |
-| `kick` | `{ target }` | **Admin only** |
-| `mute` / `unmute` | `{ target }` | **Admin only** |
+| Type              | Payload              | Notes                                                                               |
+| ----------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| `join`            | `{ username, room }` | First message on every connection; server assigns a de-duplicated username if taken |
+| `message`         | `{ text }`           | Sent to the client's current room                                                   |
+| `private_message` | `{ to, text }`       | Direct message to another online user                                               |
+| `switch_room`     | `{ room }`           | Must be an existing room                                                            |
+| `create_room`     | `{ room }`           | `1–24` chars, `[a-zA-Z0-9_-]` only; also switches the client into it                |
+| `typing`          | `{}`                 | Broadcast to the client's current room                                              |
+| `kick`            | `{ target }`         | **Admin only**                                                                      |
+| `mute` / `unmute` | `{ target }`         | **Admin only**                                                                      |
 
 ### Server → Client Events
 
-| Type | Payload |
-|---|---|
-| `welcome` | `{ username, room, isAdmin, users, rooms, onlineUsers, history }` |
-| `notification` | `{ text, users, room }` |
-| `message` | `{ id, username, text, room, timestamp }` |
-| `private_message` | `{ id, from, to, text, timestamp }` |
-| `room_switched` | `{ room, users, history }` |
-| `room_list` | `{ rooms }` |
-| `presence` | `{ username, status }` — `online` \| `away` \| `offline` |
-| `typing` | `{ username, room }` |
-| `delivered` | `{ id }` |
-| `error` | `{ text, code }` — codes include `muted`, `rate_limited`, `no_such_room`, `bad_room_name`, `user_offline`, `not_admin` |
-| `kicked` | `{ by }` |
-| `system_shutdown` | `{ text }` |
+| Type              | Payload                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `welcome`         | `{ username, room, isAdmin, users, rooms, onlineUsers, history }`                                                      |
+| `notification`    | `{ text, users, room }`                                                                                                |
+| `message`         | `{ id, username, text, room, timestamp }`                                                                              |
+| `private_message` | `{ id, from, to, text, timestamp }`                                                                                    |
+| `room_switched`   | `{ room, users, history }`                                                                                             |
+| `room_list`       | `{ rooms }`                                                                                                            |
+| `presence`        | `{ username, status }` — `online` \| `away` \| `offline`                                                               |
+| `typing`          | `{ username, room }`                                                                                                   |
+| `delivered`       | `{ id }`                                                                                                               |
+| `error`           | `{ text, code }` — codes include `muted`, `rate_limited`, `no_such_room`, `bad_room_name`, `user_offline`, `not_admin` |
+| `kicked`          | `{ by }`                                                                                                               |
+| `system_shutdown` | `{ text }`                                                                                                             |
 
 ## HTTP Routes
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Serves `public/index.html` |
-| `GET` | `/{filename:path}` | Serves any file under `public/`; falls back to `index.html` for unknown paths (SPA-style routing); path traversal is blocked by resolving and validating the target path |
-| `WS` | `/ws` | The chat WebSocket endpoint |
+| Method | Path               | Description                                                                                                                                                              |
+| ------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/`                | Serves `public/index.html`                                                                                                                                               |
+| `GET`  | `/{filename:path}` | Serves any file under `public/`; falls back to `index.html` for unknown paths (SPA-style routing); path traversal is blocked by resolving and validating the target path |
+| `WS`   | `/ws`              | The chat WebSocket endpoint                                                                                                                                              |
 
 ## Utility Scripts
 
@@ -341,13 +313,13 @@ uvicorn's own access logs are suppressed (`log_level='warning'`) so this structu
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| "Could not connect" on the join screen | Wrong server address, server not running, or a firewall blocking the port |
-| Messages show `[TAMPERED: ...]` | Ciphertext was modified after being written (see [Tamper Detection](#tamper-detection)) — expected if you ran `tamper_last.py` |
+| Symptom                                | Likely cause                                                                                                                                       |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Could not connect" on the join screen | Wrong server address, server not running, or a firewall blocking the port                                                                          |
+| Messages show `[TAMPERED: ...]`        | Ciphertext was modified after being written (see [Tamper Detection](#tamper-detection)) — expected if you ran `tamper_last.py`                     |
 | Messages show `[UNVERIFIED SIGNATURE]` | The stored signature no longer matches the sender's public key — check whether `data/keys/<user>.key` was regenerated or `data/master.key` changed |
-| Reconnect loop never stops | Client-side backoff caps at 16s and keeps retrying by design until the server is reachable again |
-| Admin controls not showing | Username doesn't (case-insensitively) match `ADMIN_USERNAMES` |
+| Reconnect loop never stops             | Client-side backoff caps at 16s and keeps retrying by design until the server is reachable again                                                   |
+| Admin controls not showing             | Username doesn't (case-insensitively) match `ADMIN_USERNAMES`                                                                                      |
 
 ## Roadmap
 
