@@ -42,6 +42,11 @@
   const composer = document.getElementById("composer");
   const msgInput = document.getElementById("msgInput");
   const sendBtn = document.getElementById("sendBtn");
+  const charCounter = document.getElementById("charCounter");
+
+  const soundToggleBtn = document.getElementById("soundToggleBtn");
+  const themeToggleBtn = document.getElementById("themeToggleBtn");
+  const clearChatBtn = document.getElementById("clearChatBtn");
 
   // ---------- Connection / session state ----------
   let ws = null;
@@ -102,6 +107,63 @@
           ? `reconnecting… (attempt ${reconnectAttempts})`
           : "disconnected";
   }
+
+  // ---------------------------------------------------------
+  // Client-only preferences: sound toggle, theme toggle,
+  // clear-chat, character counter.
+  // These are purely local UI state — nothing here is sent to
+  // the server or changes the wire protocol in any way.
+  // ---------------------------------------------------------
+  let soundEnabled = true;
+
+  function playNotifySound() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch {
+      // Some browsers block AudioContext before any user gesture;
+      // fail silently rather than throwing in the message pipeline.
+    }
+  }
+
+  soundToggleBtn.addEventListener("click", () => {
+    soundEnabled = !soundEnabled;
+    soundToggleBtn.textContent = soundEnabled ? "🔔" : "🔕";
+    soundToggleBtn.classList.toggle("off", !soundEnabled);
+  });
+
+  themeToggleBtn.addEventListener("click", () => {
+    const isLight = document.body.classList.toggle("light-theme");
+    themeToggleBtn.textContent = isLight ? "☀️" : "🌙";
+  });
+
+  clearChatBtn.addEventListener("click", () => {
+    // Clears only what's rendered in the DOM right now. The underlying
+    // room/DM history in roomMessageCache / dmThreads (and everything
+    // on the server) is untouched, so switching threads or reconnecting
+    // still shows the real history.
+    clearLog();
+    appendSystem("Chat view cleared (local only — history is unaffected).");
+  });
+
+  function updateCharCounter() {
+    const len = msgInput.value.length;
+    const max = Number(msgInput.getAttribute("maxlength")) || 1000;
+    charCounter.textContent = `${len} / ${max}`;
+    charCounter.classList.toggle("near-limit", len >= max * 0.9 && len < max);
+    charCounter.classList.toggle("at-limit", len >= max);
+  }
+  updateCharCounter();
 
   // ---------------------------------------------------------
   // Rendering
@@ -285,6 +347,7 @@
   });
 
   msgInput.addEventListener("input", () => {
+    updateCharCounter();
     if (!ws || ws.readyState !== WebSocket.OPEN || activeThread.kind !== "room")
       return;
     clearTimeout(typingTimeout);
@@ -409,6 +472,7 @@
         roomMessageCache.set(data.room, arr);
         if (activeThread.kind === "room" && activeThread.name === data.room)
           appendMessage(data, "room");
+        if (data.username !== myUsername) playNotifySound();
         break;
       }
 
@@ -421,6 +485,7 @@
           appendMessage(data, "dm");
         else
           appendSystem(`New DM from ${data.from} — click their name to view.`);
+        if (data.from !== myUsername) playNotifySound();
         break;
       }
 
