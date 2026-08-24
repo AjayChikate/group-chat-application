@@ -68,38 +68,6 @@ def init_db() -> None:
                         created_at REAL DEFAULT (strftime('%s', 'now'))
                     )
                 """)
-                
-                # Migrate any legacy BLOB rows to hex string format for clean SQLite Viewer compatibility
-                try:
-                    rows = conn.execute("SELECT id, ciphertext, nonce, signature FROM messages").fetchall()
-                    for r in rows:
-                        needs_update = False
-                        ct, nonce, sig = r['ciphertext'], r['nonce'], r['signature']
-                        if isinstance(ct, bytes):
-                            ct = ct.hex()
-                            needs_update = True
-                        if isinstance(nonce, bytes):
-                            nonce = nonce.hex()
-                            needs_update = True
-                        if isinstance(sig, bytes):
-                            sig = sig.hex()
-                            needs_update = True
-                        if needs_update:
-                            conn.execute(
-                                "UPDATE messages SET ciphertext=?, nonce=?, signature=? WHERE id=?",
-                                (ct, nonce, sig, r['id'])
-                            )
-                            
-                    key_rows = conn.execute("SELECT username, public_key FROM user_keys").fetchall()
-                    for kr in key_rows:
-                        pk = kr['public_key']
-                        if isinstance(pk, bytes):
-                            conn.execute(
-                                "UPDATE user_keys SET public_key=? WHERE username=?",
-                                (pk.hex(), kr['username'])
-                            )
-                except Exception:
-                    pass
         finally:
             conn.close()
 
@@ -183,7 +151,7 @@ def append_message(room_id: str, msg: Dict[str, Any], sender_private_key: Option
     signable_payload = crypto.make_signable_payload(msg_id, room_id, sender, timestamp, nonce, ciphertext)
     signature = crypto.sign_message(sender_private_key, signable_payload)
 
-    # 3. Store in SQLite (saved as hex-encoded non-plaintext for full DB-viewer compatibility)
+    # 3. Store in SQLite
     save_message(msg_id, room_id, sender, ciphertext, nonce, signature, timestamp)
 
     return {
@@ -197,6 +165,7 @@ def append_message(room_id: str, msg: Dict[str, Any], sender_private_key: Option
 
 
 def get_history(room_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+
     with _db_lock:
         conn = get_db_connection()
         try:
