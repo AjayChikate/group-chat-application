@@ -1,9 +1,7 @@
 
 import os
 import sqlite3
-
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'chat.db')
-
 def tamper_last_message():
     if not os.path.exists(DB_PATH):
         print(f"[!] Database not found at {DB_PATH}")
