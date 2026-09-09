@@ -1,9 +1,4 @@
-"""
-clear_db.py
-------------------------------------------------------------
-Clears all stored chat messages and cached keys from the SQLite database.
-------------------------------------------------------------
-"""
+
 import os
 import sqlite3
 
@@ -27,13 +22,13 @@ def clear_database():
         # Run VACUUM outside transaction to reclaim disk space
         conn.execute("VACUUM")
             
-        print("=" * 60)
+     
         print(" DATABASE CLEARED SUCCESSFULLY")
-        print("=" * 60)
+ 
         print(f" Deleted {msg_count} message(s) from 'messages' table.")
         print(f" Cleared 'user_keys' table.")
         print(f" Database at {DB_PATH} is now fresh and empty.")
-        print("=" * 60)
+      
     finally:
         conn.close()
 

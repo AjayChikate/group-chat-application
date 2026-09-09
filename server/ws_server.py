@@ -1,55 +1,3 @@
-"""
-ws_server.py
-------------------------------------------------------------
-Wires together RoomManager, the rate limiter, and the durable
-store into the actual WebSocket protocol handlers. This is the
-only file that understands the wire format (the `type` field
-on every JSON message) — config/store/rooms stay generic and
-reusable.
-
-Wire protocol is byte-identical to the original Node version
-(same field names, e.g. "isAdmin"/"onlineUsers" stay camelCase)
-since the frontend (public/app.js) is unchanged and expects
-these exact keys.
-
-Wire protocol (client -> server):
-  { type:'join',            username, room }
-  { type:'message',         text }
-  { type:'private_message', to, text }
-  { type:'switch_room',     room }
-  { type:'create_room',     room }
-  { type:'typing' }
-  { type:'kick',            target }      (admin only)
-  { type:'mute'/'unmute',   target }      (admin only)
-
-Wire protocol (server -> client):
-  { type:'welcome',         username, room, isAdmin, users, rooms, onlineUsers, history }
-  { type:'notification',    text, users, room }
-  { type:'message',         id, username, text, room, timestamp }
-  { type:'private_message', id, from, to, text, timestamp }
-  { type:'room_switched',   room, users, history }
-  { type:'room_list',       rooms }
-  { type:'presence',        username, status }   status: online|away|offline
-  { type:'typing',          username, room }
-  { type:'delivered',       id }
-  { type:'error',           text, code }
-  { type:'kicked',          by }
-  { type:'system_shutdown', text }
-
-FastAPI migration notes:
-  - handle_connection is now async; it calls await ws.accept() once,
-    then loops on await ws.receive_text() which raises
-    WebSocketDisconnect when the client closes.
-  - _send / _close_ws schedule coroutines onto the running asyncio
-    event loop (stored as self._loop at startup) so they are safe
-    to call from background threads (presence sweep, etc.).
-  - Connection liveness is tracked via client['connected'] bool
-    because Starlette's WebSocket has no .connected attribute.
-  - Dead-connection detection: uvicorn/starlette handle WebSocket
-    ping/pong natively when configured; the heartbeat_interval is
-    passed via the lifespan / uvicorn config in app.py.
-------------------------------------------------------------
-"""
 import asyncio
 import json
 import re
@@ -79,30 +27,19 @@ class WSServer:
         self._presence_stop = threading.Event()
         self._presence_thread = threading.Thread(target=self._presence_sweep_loop, daemon=True)
         self._presence_thread.start()
-
-    # ---------------------------------------------------------
     # Asyncio loop access — captured once from the first request
     # so background threads can schedule coroutines on it.
-    # ---------------------------------------------------------
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:
             self._loop = asyncio.get_event_loop()
         return self._loop
 
-    # ---------------------------------------------------------
     # Helpers
-    # ---------------------------------------------------------
     @staticmethod
     def _is_valid_room_name(name) -> bool:
         return isinstance(name, str) and bool(ROOM_NAME_RE.match(name))
 
     def _send(self, client: dict, obj: dict) -> None:
-        """Thread-safe send of one JSON object to one client.
-
-        May be called from either the asyncio thread or a background
-        thread. Schedules ws.send_text() on the event loop so it is
-        always executed in the correct async context.
-        """
         if not client.get('connected', False):
             return
         ws: WebSocket = client['ws']
@@ -146,10 +83,7 @@ class WSServer:
             final = f'{base}({n})'
             n += 1
         return final
-
-    # ---------------------------------------------------------
     # Per-connection entry point — called from app.py's @app.websocket
-    # ---------------------------------------------------------
     async def handle_connection(self, ws: WebSocket) -> None:
         await ws.accept()
 
@@ -241,9 +175,7 @@ class WSServer:
             self._broadcast_presence(client, 'offline')
             self.logger.log('disconnect', username=client['username'], client_id=client['id'])
 
-    # ---------------------------------------------------------
     # Handler: join
-    # ---------------------------------------------------------
     def _handle_join(self, client: dict, data: dict) -> None:
         if client['username']:
             return  # already joined; ignore repeat joins
@@ -296,9 +228,7 @@ class WSServer:
         self._broadcast_presence(client, 'online')
         self.logger.log('join', username=username, room=room, client_id=client['id'], is_admin=client['is_admin'])
 
-    # ---------------------------------------------------------
     # Handler: room chat message
-    # ---------------------------------------------------------
     def _handle_message(self, client: dict, data: dict) -> None:
         if not client['username']:
             return
@@ -324,9 +254,7 @@ class WSServer:
         self.room_manager.broadcast(client['room'], {'type': 'message', **msg})
         self._send(client, {'type': 'delivered', 'id': msg['id']})
 
-    # ---------------------------------------------------------
     # Handler: private (1-to-1) message
-    # ---------------------------------------------------------
     def _handle_private_message(self, client: dict, data: dict) -> None:
         if not client['username']:
             return
@@ -361,9 +289,7 @@ class WSServer:
             self._send(target_client, {'type': 'private_message', **dm})
         self._send(client, {'type': 'private_message', **dm})  # echo to sender
 
-    # ---------------------------------------------------------
     # Handler: switch_room
-    # ---------------------------------------------------------
     def _handle_switch_room(self, client: dict, data: dict) -> None:
         if not client['username']:
             return
@@ -408,9 +334,7 @@ class WSServer:
 
         self._broadcast_to_all({'type': 'room_list', 'rooms': self.room_manager.list_rooms()})
 
-    # ---------------------------------------------------------
     # Handler: create_room
-    # ---------------------------------------------------------
     def _handle_create_room(self, client: dict, data: dict) -> None:
         if not client['username']:
             return
@@ -423,9 +347,7 @@ class WSServer:
             self._broadcast_to_all({'type': 'room_list', 'rooms': self.room_manager.list_rooms()})
         self._handle_switch_room(client, {'room': name})
 
-    # ---------------------------------------------------------
-    # Handler: typing indicator
-    # ---------------------------------------------------------
+    # Handler: typing indicator  
     def _handle_typing(self, client: dict) -> None:
         if not client['username'] or not client['room']:
             return
@@ -435,9 +357,8 @@ class WSServer:
             client['id'],
         )
 
-    # ---------------------------------------------------------
-    # Handler: moderation (kick / mute / unmute) — admin only
-    # ---------------------------------------------------------
+    
+    # Handler: moderation (kick / mute / unmute) — admin only 
     def _handle_moderation(self, client: dict, data: dict, action: str) -> None:
         if not client['username']:
             return
@@ -475,11 +396,10 @@ class WSServer:
                 })
             self.logger.log('moderation_unmute', by=client['username'], target=target_name)
 
-    # ---------------------------------------------------------
     # Background: presence (idle -> "away") sweep
     # Replaces node's setInterval with a daemon thread + Event.wait,
     # which also doubles as the sleep (wait() returns False on timeout).
-    # ---------------------------------------------------------
+
     def _presence_sweep_loop(self) -> None:
         interval_sec = config.PRESENCE_CHECK_INTERVAL_MS / 1000
         while not self._presence_stop.wait(interval_sec):
