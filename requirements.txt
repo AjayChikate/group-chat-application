@@ -3,3 +3,8 @@ uvicorn[standard]
 python-multipart
 websockets
 cryptography
+pymongo[srv]
+httpx 
+aiohttp 
+matplotlib
+python-dotenv

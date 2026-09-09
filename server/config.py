@@ -1,6 +1,11 @@
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
+# Load .env file from project root
+_ENV_PATH = Path(__file__).resolve().parent.parent / '.env'
+load_dotenv(_ENV_PATH)
 
 def csv(name: str, fallback: list) -> list:
     raw = os.environ.get(name)
@@ -10,6 +15,9 @@ def csv(name: str, fallback: list) -> list:
 
 
 PORT = int(os.environ.get('PORT', '5000'))
+
+MONGO_URL = os.environ.get('Mongo_URL') or os.environ.get('MONGO_URL') or os.environ.get('MONGO_URI')
+MONGO_DB_NAME = os.environ.get('MONGO_DB_NAME', 'group_chat')
 
 # Rooms that always exist, even with nobody in them.
 DEFAULT_ROOMS = csv('DEFAULT_ROOMS', ['general', 'random', 'tech'])
