@@ -9,7 +9,7 @@ def csv(name: str, fallback: list) -> list:
     return [s.strip() for s in raw.split(',') if s.strip()]
 
 
-PORT = int(os.environ.get('PORT', '5000'))
+PORT = int(os.environ.get('PORT', '3000'))
 
 # Rooms that always exist, even with nobody in them.
 DEFAULT_ROOMS = csv('DEFAULT_ROOMS', ['general', 'random', 'tech'])
