@@ -46,26 +46,43 @@ def _to_hex(val) -> str:
     return str(val)
 
 
+_user_keys_cache: Dict[str, ed25519.Ed25519PublicKey] = {}
+
 # ---------------------------------------------------------------------------
 # User public keys
 # ---------------------------------------------------------------------------
 def save_user_public_key(username: str, public_key_bytes: bytes) -> None:
+    uname = username.lower()
+    try:
+        pub = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        _user_keys_cache[uname] = pub
+    except Exception:
+        pass
+
     _user_keys.update_one(
-        {'username': username.lower()},
+        {'username': uname},
         {'$set': {'public_key': _to_hex(public_key_bytes)}},
         upsert=True,
     )
 
 
 def get_user_public_key(username: str) -> Optional[ed25519.Ed25519PublicKey]:
-    doc = _user_keys.find_one({'username': username.lower()})
+    uname = username.lower()
+    if uname in _user_keys_cache:
+        return _user_keys_cache[uname]
+
+    doc = _user_keys.find_one({'username': uname})
     if doc:
         raw_bytes = _to_bytes(doc['public_key'])
-        return ed25519.Ed25519PublicKey.from_public_bytes(raw_bytes)
+        pub = ed25519.Ed25519PublicKey.from_public_bytes(raw_bytes)
+        _user_keys_cache[uname] = pub
+        return pub
 
     # Fallback: generate/load from local keystore on disk
     _, pub = crypto.get_or_create_sender_keys(username)
+    _user_keys_cache[uname] = pub
     return pub
+
 
 def save_message(
     msg_id: str,
@@ -173,7 +190,9 @@ def get_history(room_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         history.append({
             'id': msg_id,
             'username': sender,
+            'client-name': sender,
             'text': decrypted_text,
+            'msg': decrypted_text,
             'room': room_id,
             'timestamp': timestamp,
             'verified': not is_tampered,
@@ -181,3 +200,75 @@ def get_history(room_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         })
 
     return history
+
+
+def get_feed(room_id: Optional[str] = None, limit: int = 2000) -> List[Dict[str, Any]]:
+    """Retrieve all messages (across all rooms or filtered) sorted chronologically."""
+    query = {}
+    if room_id:
+        query['room_id'] = room_id
+
+    cursor = _messages.find(
+        query,
+        sort=[('timestamp', DESCENDING)],
+        limit=limit,
+    )
+    rows = list(reversed(list(cursor)))
+
+    # Prefetch missing public keys in a single bulk query
+    missing_senders = [
+        doc.get('sender', '').lower()
+        for doc in rows
+        if doc.get('sender', '').lower() and doc.get('sender', '').lower() not in _user_keys_cache
+    ]
+    if missing_senders:
+        for u_doc in _user_keys.find({'username': {'$in': list(set(missing_senders))}}):
+            try:
+                raw_bytes = _to_bytes(u_doc['public_key'])
+                _user_keys_cache[u_doc['username']] = ed25519.Ed25519PublicKey.from_public_bytes(raw_bytes)
+            except Exception:
+                pass
+
+    feed = []
+    for doc in rows:
+        msg_id = doc['_id']
+        sender = doc.get('sender', 'Anonymous')
+        r_id = doc.get('room_id', 'general')
+        timestamp = doc.get('timestamp', 0)
+        ciphertext = _to_bytes(doc.get('ciphertext', ''))
+        nonce = _to_bytes(doc.get('nonce', ''))
+        signature = _to_bytes(doc.get('signature', ''))
+
+        pub_key = get_user_public_key(sender)
+
+        signable_payload = crypto.make_signable_payload(msg_id, r_id, sender, timestamp, nonce, ciphertext)
+
+        signature_valid = False
+        if pub_key:
+            signature_valid = crypto.verify_signature(pub_key, signature, signable_payload)
+
+        decrypted_text = None
+        decryption_valid = False
+        try:
+            decrypted_text = crypto.decrypt_message(ciphertext, nonce)
+            decryption_valid = True
+        except InvalidTag:
+            decrypted_text = '[TAMPERED: AES-GCM Integrity Check Failed]'
+        except Exception as e:
+            decrypted_text = f'[DECRYPTION ERROR: {e}]'
+
+        is_tampered = not (signature_valid and decryption_valid)
+
+        feed.append({
+            'id': msg_id,
+            'client-name': sender,
+            'username': sender,
+            'msg': decrypted_text,
+            'text': decrypted_text,
+            'room': r_id,
+            'timestamp': timestamp,
+            'verified': not is_tampered,
+            'tampered': is_tampered,
+        })
+
+    return feed
