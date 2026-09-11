@@ -36,10 +36,9 @@ IDLE_TIMEOUT_MS = int(os.environ.get('IDLE_TIMEOUT_MS', '100000'))
 
 PRESENCE_CHECK_INTERVAL_MS = 15000
 
-# refilling at REFILL_PER_SEC tokens/second thereafter.
 RATE_LIMIT = {
-    'BURST': int(os.environ.get('RATE_LIMIT_BURST', '8')),
-    'REFILL_PER_SEC': float(os.environ.get('RATE_LIMIT_REFILL', '2')),
+    'BURST': int(os.environ.get('RATE_LIMIT_BURST', '5000')),
+    'REFILL_PER_SEC': float(os.environ.get('RATE_LIMIT_REFILL', '5000.0')),
 }
 
 MAX_USERNAME_LEN = 20

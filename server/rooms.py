@@ -12,9 +12,15 @@ def _safe_send(member: dict, payload: str) -> None:
     if not ws or not loop:
         return
     try:
-        # run_coroutine_threadsafe is safe to call from any thread,
-        # including the asyncio thread itself.
-        asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is loop:
+            asyncio.create_task(ws.send_text(payload))
+        else:
+            asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
     except Exception:
         pass
 

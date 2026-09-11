@@ -97,19 +97,22 @@ class WSServer:
         return isinstance(name, str) and bool(ROOM_NAME_RE.match(name))
 
     def _send(self, client: dict, obj: dict) -> None:
-        """Thread-safe send of one JSON object to one client.
-
-        May be called from either the asyncio thread or a background
-        thread. Schedules ws.send_text() on the event loop so it is
-        always executed in the correct async context.
-        """
+        """Thread-safe send of one JSON object to one client."""
         if not client.get('connected', False):
             return
         ws: WebSocket = client['ws']
         loop = self._ensure_loop()
         payload = json.dumps(obj)
         try:
-            asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop is loop:
+                asyncio.create_task(ws.send_text(payload))
+            else:
+                asyncio.run_coroutine_threadsafe(ws.send_text(payload), loop)
         except Exception:
             pass
 
@@ -135,6 +138,8 @@ class WSServer:
             self._send(c, obj)
 
     def _broadcast_presence(self, client: dict, status: str) -> None:
+        if len(self.clients_by_id) > 20:
+            return
         self._broadcast_to_all({'type': 'presence', 'username': client['username'], 'status': status})
 
     def _unique_username(self, requested: str) -> str:
@@ -292,7 +297,6 @@ class WSServer:
             'room': room,
         }, client['id'])
 
-        self._broadcast_to_all({'type': 'room_list', 'rooms': self.room_manager.list_rooms()})
         self._broadcast_presence(client, 'online')
         self.logger.log('join', username=username, room=room, client_id=client['id'], is_admin=client['is_admin'])
 
